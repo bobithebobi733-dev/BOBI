@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOBI</title>
+<style>
+  body {
+    background: #0a0e14;
+    color: #00d4ff;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+    text-align: center;
+  }
+  h1 {
+    font-size: 2.5em;
+    letter-spacing: 4px;
+    text-shadow: 0 0 20px #00d4ff;
+  }
+  #circle {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    border: 3px solid #00d4ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 30px 0;
+    box-shadow: 0 0 30px #00d4ff55;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  #circle.listening {
+    box-shadow: 0 0 60px #00d4ff;
+    transform: scale(1.05);
+  }
+  #status {
+    font-size: 1.1em;
+    min-height: 25px;
+    opacity: 0.8;
+  }
+  #log {
+    max-width: 500px;
+    margin-top: 20px;
+    font-size: 0.95em;
+    opacity: 0.85;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .you { color: #fff; }
+  .jarvis { color: #00d4ff; }
+</style>
+</head>
+<body>
+
+<h1>B O B I</h1>
+<div id="circle" onclick="toggleListen()">🎙️</div>
+<div id="status">Toca el círculo para activar el modo conversación</div>
+<select id="voiceSelect" style="margin-top:15px; background:#111; color:#00d4ff; border:1px solid #00d4ff; padding:8px; border-radius:8px; max-width:280px;"></select>
+<div id="log"></div>
+
+<script>
+const circle = document.getElementById('circle');
+const status = document.getElementById('status');
+const log = document.getElementById('log');
+
+let recognition;
+let listening = false;
+let autoMode = false;
+let selectedVoice = null;
+
+const voiceSelect = document.getElementById('voiceSelect');
+
+function loadVoices() {
+  const voices = speechSynthesis.getVoices();
+  const spanishVoices = voices.filter(v => v.lang.startsWith('es'));
+  const list = spanishVoices.length > 0 ? spanishVoices : voices;
+
+  voiceSelect.innerHTML = '';
+  list.forEach((voice, i) => {
+    const option = document.createElement('option');
+    option.value = i;
+    option.textContent = `${voice.name} (${voice.lang})`;
+    voiceSelect.appendChild(option);
+  });
+
+  if (list.length > 0) {
+    selectedVoice = list[0];
+  }
+
+  voiceSelect.onchange = () => {
+    selectedVoice = list[voiceSelect.value];
+  };
+}
+
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+  status.textContent = "Tu navegador no soporta reconocimiento de voz. Usa Chrome.";
+} else {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SpeechRecognition();
+  recognition.lang = 'es-ES';
+  recognition.continuous = false;
+  recognition.interimResults = false;
+
+  recognition.onstart = () => {
+    listening = true;
+    circle.classList.add('listening');
+    status.textContent = "Escuchando...";
+  };
+
+  recognition.onend = () => {
+    listening = false;
+    circle.classList.remove('listening');
+  };
+
+  recognition.onerror = (e) => {
+    status.textContent = "Error: " + e.error;
+  };
+
+  recognition.onresult = (event) => {
+    const text = event.results[0][0].transcript;
+    addLog('you', "Tú: " + text);
+
+    const comando = detectarComandoAbrirPagina(text);
+    if (comando) {
+      const mensaje = comando.termino
+        ? `Buscando "${comando.termino}" en ${comando.nombre}...`
+        : `Abriendo ${comando.nombre}...`;
+      addLog('jarvis', "BOBI: " + mensaje);
+      window.open(comando.url, '_blank');
+      speak(mensaje);
+      status.textContent = "Toca el círculo para activar el modo conversación";
+      return;
+    }
+
+    status.textContent = "Pensando...";
+    sendToBOBI(text);
+  };
+}
+
+// Sitios conocidos: agrega más si quieres
+const SITIOS_CONOCIDOS = {
+  youtube: "https://www.youtube.com",
+  google: "https://www.google.com",
+  facebook: "https://www.facebook.com",
+  instagram: "https://www.instagram.com",
+  whatsapp: "https://web.whatsapp.com",
+  gmail: "https://mail.google.com",
+  netflix: "https://www.netflix.com",
+  twitter: "https://www.twitter.com",
+  "x": "https://www.x.com",
+  tiktok: "https://www.tiktok.com",
+  amazon: "https://www.amazon.com",
+  spotify: "https://open.spotify.com",
+};
+
+// Sitios donde sí sabemos armar una URL de búsqueda directa
+const BUSQUEDA_EN_SITIO = {
+  youtube: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+  google: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+  amazon: (q) => `https://www.amazon.com/s?k=${encodeURIComponent(q)}`,
+  spotify: (q) => `https://open.spotify.com/search/${encodeURIComponent(q)}`,
+};
+
+// Palabras que indican que después viene el término de búsqueda
+const PALABRAS_BUSQUEDA = ["busca", "buscar", "búscame", "busques", "buscando"];
+
+function detectarComandoAbrirPagina(texto) {
+  const lower = texto.toLowerCase();
+  const disparadores = ["abre", "abras", "abrir", "abriendo", "ábreme",
+                         "entra a", "entrar a", "entres a",
+                         "ve a", "vete a", "vaya a"];
+
+  const tieneDisparador = disparadores.some(d => lower.includes(d));
+  if (!tieneDisparador) return null;
+
+  for (const nombre in SITIOS_CONOCIDOS) {
+    if (lower.includes(nombre)) {
+      for (const palabraBusqueda of PALABRAS_BUSQUEDA) {
+        const idx = lower.indexOf(palabraBusqueda);
+        if (idx !== -1 && BUSQUEDA_EN_SITIO[nombre]) {
+          let termino = texto.slice(idx + palabraBusqueda.length).trim();
+          termino = termino.replace(/^(de|sobre|un|una|el|la|los|las)\s+/i, '');
+          if (termino) {
+            return {
+              nombre: nombre.charAt(0).toUpperCase() + nombre.slice(1),
+              url: BUSQUEDA_EN_SITIO[nombre](termino),
+              termino: termino,
+            };
+          }
+        }
+      }
+      return { nombre: nombre.charAt(0).toUpperCase() + nombre.slice(1), url: SITIOS_CONOCIDOS[nombre] };
+    }
+  }
+  return null;
+}
+
+function toggleListen() {
+  if (!recognition) return;
+  if (autoMode) {
+    autoMode = false;
+    recognition.stop();
+    speechSynthesis.cancel();
+    status.textContent = "Modo automático desactivado. Toca para activarlo de nuevo.";
+  } else {
+    autoMode = true;
+    recognition.start();
+  }
+}
+
+function addLog(cls, text) {
+  const p = document.createElement('div');
+  p.className = cls;
+  p.textContent = text;
+  log.appendChild(p);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendToBOBI(message) {
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message })
+    });
+    const data = await res.json();
+    addLog('jarvis', "BOBI: " + data.reply);
+    status.textContent = "Toca el círculo para hablar";
+    speak(data.reply);
+  } catch (err) {
+    status.textContent = "Error de conexión con el servidor";
+  }
+}
+
+function speak(text) {
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'es-ES';
+  if (selectedVoice) {
+    utterance.voice = selectedVoice;
+  }
+  utterance.onend = () => {
+    if (autoMode && !listening) {
+      setTimeout(() => recognition.start(), 300);
+    }
+  };
+  speechSynthesis.speak(utterance);
+}
+</script>
+
+</body>
+</html>
