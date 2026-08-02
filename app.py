@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify, render_template
 import requests
+import os
 
 app = Flask(__name__)
 
-# URL local donde corre Ollama (se inicia solo al abrir la app de Ollama)
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "llama3.2"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 conversation_history = []
 
@@ -21,7 +22,7 @@ SYSTEM_PROMPT = (
     "o quede claramente fuera de un consejo básico y general. "
     "Tu creador es Josué Francisco Atalaya Pineda, quien te programó. "
     "Si te preguntan quién te creó, quién te hizo o de dónde vienes, responde que fuiste creado por Josué Francisco Atalaya Pineda, "
-    "nunca menciones a Meta, OpenAI, ni ninguna otra empresa como tu creador. "
+    "nunca menciones a Meta, OpenAI, Groq, ni ninguna otra empresa como tu creador. "
     "Por defecto, responde en 2-4 frases cortas y directas, como si hablaras, no como si escribieras un ensayo. "
     "Evita listas largas, encabezados o explicaciones exhaustivas a menos que la persona te pida explícitamente 'explícame a detalle', 'paso a paso' o algo similar. "
     "Si te piden algo detallado, ahí sí puedes extenderte, pero organiza la idea en pocos puntos claros. "
@@ -42,7 +43,6 @@ def chat():
     if not user_message:
         return jsonify({"reply": "No escuché nada, ¿puedes repetirlo?"})
 
-    # Respuesta fija para preguntas sobre el creador (evita que el modelo invente otra cosa)
     lower_msg = user_message.lower()
     palabras_creador = ["quién es tu creador", "quien es tu creador", "quién te creó", "quien te creo",
                          "quién te hizo", "quien te hizo", "de dónde vienes", "de donde vienes",
@@ -58,25 +58,32 @@ def chat():
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
 
+    if not GROQ_API_KEY:
+        reply = "Falta configurar la API key de Groq en el servidor."
+        return jsonify({"reply": reply})
+
     try:
         response = requests.post(
-            OLLAMA_URL,
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
             json={
                 "model": MODEL_NAME,
                 "messages": messages,
-                "stream": False,
             },
-            timeout=180,
+            timeout=60,
         )
         response.raise_for_status()
-        reply = response.json()["message"]["content"]
+        reply = response.json()["choices"][0]["message"]["content"]
         conversation_history.append({"role": "assistant", "content": reply})
 
         if len(conversation_history) > 20:
             del conversation_history[:2]
 
     except requests.exceptions.ConnectionError:
-        reply = "No puedo conectarme a Ollama. Asegúrate de que la aplicación de Ollama esté abierta."
+        reply = "No puedo conectarme al servicio de IA. Revisa tu conexión."
     except Exception as e:
         reply = f"Tuve un problema: {str(e)}"
 
@@ -84,4 +91,5 @@ def chat():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
