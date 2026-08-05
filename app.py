@@ -1,12 +1,25 @@
 from flask import Flask, request, jsonify, render_template
 import requests
 import os
+from datetime import date
 
 app = Flask(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL_NAME = "llama-3.3-70b-versatile"
+
+# PIN de acceso: se configura como variable de entorno BOBI_PIN en Render.
+# Si la dejas vacía, cualquiera puede usar BOBI sin pedir PIN.
+BOBI_PIN = os.environ.get("BOBI_PIN", "")
+
+# PIN del creador: quien entre con este PIN NO tiene límite diario.
+# Configúralo como variable de entorno BOBI_OWNER_PIN en Render (debe ser distinto al BOBI_PIN normal si lo usas).
+BOBI_OWNER_PIN = os.environ.get("BOBI_OWNER_PIN", "")
+
+# Límite diario de mensajes para todos los demás, para proteger la cuota gratis de Groq
+LIMITE_DIARIO = 300
+uso_diario = {"fecha": None, "contador": 0}
 
 conversation_history = []
 
@@ -30,13 +43,34 @@ SYSTEM_PROMPT = (
 )
 
 
+def verificar_limite_diario():
+    hoy = str(date.today())
+    if uso_diario["fecha"] != hoy:
+        uso_diario["fecha"] = hoy
+        uso_diario["contador"] = 0
+    uso_diario["contador"] += 1
+    return uso_diario["contador"] <= LIMITE_DIARIO
+
+
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return render_template("index.html", pin_requerido=bool(BOBI_PIN))
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    pin_enviado = request.headers.get("X-BOBI-PIN", "")
+    es_creador = bool(BOBI_OWNER_PIN) and pin_enviado == BOBI_OWNER_PIN
+
+    # Verifica el PIN si está configurado (el PIN de creador también es válido para entrar)
+    if BOBI_PIN and not es_creador:
+        if pin_enviado != BOBI_PIN:
+            return jsonify({"reply": "PIN incorrecto.", "pin_error": True}), 401
+
+    # El creador no tiene límite diario
+    if not es_creador and not verificar_limite_diario():
+        return jsonify({"reply": "Se alcanzó el límite de mensajes por hoy. Intenta mañana."})
+
     data = request.get_json()
     user_message = data.get("message", "").strip()
 
